@@ -4,17 +4,10 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from torch.distributions import Categorical
-import numpy as np
+
+# Fix for NumPy deprecation
 if not hasattr(np, 'bool8'):
     np.bool8 = np.bool_
-    
-# PPO implementation using PyTorch
-# This code implements the Proximal Policy Optimization (PPO) algorithm for reinforcement learning.
-# It uses a simple feedforward neural network as the policy and value function approximator.
-# The code is designed to work with the OpenAI Gym environment, specifically the CartPole-v1 environment.
-# The PPO algorithm is a popular policy gradient method that uses a clipped objective function to stabilize training.
-# It collects trajectories from the environment, computes Generalized Advantage Estimation (GAE) for advantage estimation,
-# and performs multiple epochs of mini-batch updates to the policy and value networks.
 
 # Hyperparameters
 env_name = "CartPole-v1"
@@ -27,7 +20,6 @@ mini_batch_size = 64
 gae_lambda = 0.95
 entropy_coef = 0.01
 value_loss_coef = 0.5
-
 
 class ActorCritic(nn.Module):
     def __init__(self, state_dim, action_dim):
@@ -63,14 +55,19 @@ def compute_gae(rewards, values, dones, next_value):
 
 def collect_trajectories(env, model):
     states, actions, log_probs, rewards, dones, values = [], [], [], [], [], []
+    episode_rewards = []
 
     state, _ = env.reset()
+    ep_reward = 0
+
     for _ in range(steps_per_update):
         state_tensor = torch.FloatTensor(np.array(state)).unsqueeze(0)
         with torch.no_grad():
             action, log_prob, _, value = model.get_action_and_value(state_tensor)
+
         next_state, reward, terminated, truncated, _ = env.step(action.item())
         done = terminated or truncated
+        ep_reward += reward
 
         states.append(state)
         actions.append(action.item())
@@ -79,7 +76,12 @@ def collect_trajectories(env, model):
         dones.append(done)
         values.append(value.item())
 
-        state = next_state if not done else env.reset()[0]
+        if done:
+            episode_rewards.append(ep_reward)
+            ep_reward = 0
+            state, _ = env.reset()
+        else:
+            state = next_state
 
     with torch.no_grad():
         next_value = model(torch.FloatTensor(np.array(state)).unsqueeze(0))[1].item()
@@ -92,6 +94,7 @@ def collect_trajectories(env, model):
         np.array(dones),
         np.array(values),
         next_value,
+        episode_rewards
     )
 
 def ppo_update(model, optimizer, states, actions, old_log_probs, returns, advantages):
@@ -124,6 +127,7 @@ def ppo_update(model, optimizer, states, actions, old_log_probs, returns, advant
 
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)  # Gradient clipping
             optimizer.step()
 
 env = gym.make(env_name)
@@ -134,9 +138,16 @@ model = ActorCritic(obs_dim, act_dim)
 optimizer = optim.Adam(model.parameters(), lr=lr)
 
 for iteration in range(1000):
-    states, actions, log_probs, rewards, dones, values, next_val = collect_trajectories(env, model)
+    states, actions, log_probs, rewards, dones, values, next_val, episode_rewards = collect_trajectories(env, model)
     advantages, returns = compute_gae(rewards, values, dones, next_val)
+
+    # ✅ Normalize advantages
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
     ppo_update(model, optimizer, states, actions, log_probs, returns, advantages)
 
-    avg_reward = sum(rewards) / len(rewards)
-    print(f"Iteration {iteration} — Avg reward: {avg_reward:.2f}")
+    avg_reward = np.mean(episode_rewards)
+    print(f"Iteration {iteration} — Avg Episode Reward: {avg_reward:.2f}")
+
+    if iteration % 10 == 0:
+        print(f"Action Distribution (first 100): {np.bincount(actions[:100], minlength=act_dim)}")
