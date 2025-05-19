@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from torch.distributions import Categorical
+import matplotlib.pyplot as plt
 
 # Fix for NumPy deprecation
 if not hasattr(np, 'bool8'):
@@ -136,18 +137,35 @@ act_dim = env.action_space.n
 
 model = ActorCritic(obs_dim, act_dim)
 optimizer = optim.Adam(model.parameters(), lr=lr)
+def main():
+    max_updates = 100  # Number of training updates
+    all_rewards = []
 
-for iteration in range(1000):
-    states, actions, log_probs, rewards, dones, values, next_val, episode_rewards = collect_trajectories(env, model)
-    advantages, returns = compute_gae(rewards, values, dones, next_val)
+    for update in range(1, max_updates + 1):
+        # Collect trajectories
+        states, actions, old_log_probs, rewards, dones, values, next_value, episode_rewards = collect_trajectories(env, model)
 
-    # ✅ Normalize advantages
-    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Compute advantages and returns
+        advantages, returns = compute_gae(rewards, values, dones, next_value)
 
-    ppo_update(model, optimizer, states, actions, log_probs, returns, advantages)
+        # PPO update
+        ppo_update(model, optimizer, states, actions, old_log_probs, returns, advantages)
 
-    avg_reward = np.mean(episode_rewards)
-    print(f"Iteration {iteration} — Avg Episode Reward: {avg_reward:.2f}")
+        if episode_rewards:
+            avg_reward = np.mean(episode_rewards)
+            all_rewards.append(avg_reward)
+            print(f"Update {update} — Avg Episode Reward: {avg_reward:.2f}")
 
-    if iteration % 10 == 0:
-        print(f"Action Distribution (first 100): {np.bincount(actions[:100], minlength=act_dim)}")
+        # Optional: early stopping if environment is solved
+        if len(all_rewards) > 10 and np.mean(all_rewards[-10:]) > 475:
+            print("Environment solved!")
+            break
+
+    # Plot rewards at the end (optional)
+    plt.plot(all_rewards)
+    plt.xlabel('Update')
+    plt.ylabel('Average Episode Reward')
+    plt.show()
+
+if __name__ == "__main__":
+    main()
